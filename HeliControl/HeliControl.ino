@@ -11,8 +11,17 @@ IRsend irsend(4);
 int throttle = 0;
 int fwdBwd = 0;
 int turn = 0;
-int b = 0;
 int debugIndex = 0;
+
+// http://forum.arduino.cc/index.php?topic=288234.msg2459466#msg2459466
+const byte numChars = 32;
+char receivedChars[numChars];
+char tempChars[numChars];        // temporary array for use by strtok() function
+// variables to hold the parsed data
+char messageFromPC[numChars] = {0};
+int integerFromPC = 0;
+float floatFromPC = 0.0;
+boolean newData = false;
 
 unsigned int rawData[45];
 unsigned char words[7];
@@ -90,12 +99,72 @@ void generateRawData(int throttleValue, int fwdBwdValue, int turnValue) {
 
 void mapToHeliCodec(int throttle, int fwdBwd, int turn) {
   int throttleValue, fwdBwdValue, turnValue;
-  throttleValue = mapToRange(throttle * 22, 0 , 131);
-  fwdBwdValue = mapToRange(fwdBwd * fwdBwd * fwdBwd + 17 , 0, 35);
-  turnValue = mapToRange(turn * turn * turn + 17 , 0, 35);
+  throttleValue = mapToRange(throttle / 7, 0 , 131);
+  fwdBwdValue = mapToRange(fwdBwd, 0, 35);
+  turnValue = mapToRange(turn, 0, 35);
   generateRawData(throttleValue, fwdBwdValue, turnValue);
 }
 
+
+void recvWithStartEndMarkers() {
+  static boolean recvInProgress = false;
+  static byte ndx = 0;
+  char startMarker = '<';
+  char endMarker = '>';
+  char rc;
+  
+  while (Serial.available() > 0 && newData == false) {
+    rc = Serial.read();
+
+    if (recvInProgress == true) {
+      if (rc != endMarker) {
+        receivedChars[ndx] = rc;
+        ndx++;
+        if (ndx >= numChars) {
+            ndx = numChars - 1;
+        }
+      }
+      else {
+        receivedChars[ndx] = '\0'; // terminate the string
+        recvInProgress = false;
+        ndx = 0;
+        newData = true;
+      }
+    }
+    else if (rc == startMarker) {
+      recvInProgress = true;
+    }
+  }
+}
+
+bool parseData() {
+
+      // split the data into its parts
+    char * strtokIndx; // this is used by strtok() as an index
+
+    strtokIndx = strtok(tempChars,",");      // get the first part - the string
+    if(!strtokIndx)
+      return false;
+    strcpy(messageFromPC, strtokIndx); // copy it to messageFromPC
+    strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
+    if(!strtokIndx)
+      return false;
+    integerFromPC = atoi(strtokIndx);     // convert this part to an integer
+    strtokIndx = strtok(NULL, ",");
+    if(!strtokIndx)
+      return false;
+    floatFromPC = atof(strtokIndx);     // convert this part to a float
+    return true;
+}
+
+void showParsedData() {
+    //Serial.print("Message");
+    Serial.println(messageFromPC);
+    //Serial.print("Integer");
+    Serial.println(integerFromPC);
+    //Serial.print("Float ");
+    //Serial.println(floatFromPC);
+}
 
 
 void setup() {
@@ -107,33 +176,35 @@ void setup() {
 void loop() {
   irsend.sendRaw(rawData, 45, 38);
   // send data only when you receive data:
-  if (Serial.available() > 0) {
-    b = Serial.read();
-    if (b == '0')
-      throttle = mapToRange(throttle + 1, 0, MAX_THROTTLE);
-    else if ( b == '9')
-      throttle = mapToRange(throttle - 1, 0, MAX_THROTTLE);
-    else if ( b == 'a')
-      turn = (turn <= 0) ? mapToRange(turn - 1, MIN, MAX) : 0;
-    else if ( b == 'd')
-      turn = (turn >= 0) ? mapToRange(turn + 1, MIN, MAX) : 0;
-    else if ( b == 's')
-      fwdBwd = (fwdBwd <= 0) ? mapToRange(fwdBwd - 1, MIN, MAX) : 0;
-    else if ( b == 'w')
-      fwdBwd = (fwdBwd >= 0) ? mapToRange(fwdBwd + 1, MIN, MAX) : 0;
-    else
-      Serial.println("Malicious byte recieved!");
-    if (!Serial.available())
-      mapToHeliCodec(throttle, fwdBwd, turn);
+  throttle = analogRead(A0);
+  recvWithStartEndMarkers();
+  if (newData == true) {
+    strcpy(tempChars, receivedChars);
+        // this temporary copy is necessary to protect the original data
+        //   because strtok() replaces the commas with \0
+    if(parseData()){
+      showParsedData();
+      newData = false;
+      if(messageFromPC[0] == 'T') {
+        turn = integerFromPC;
+      }
+      else if(messageFromPC[0] == 'F') {
+        fwdBwd = integerFromPC;
+      }
+    }
+    else {
+      Serial.println("Error when parsing data");
+    }
   }
-  if(debugIndex%10){
+  mapToHeliCodec(throttle, fwdBwd, turn);
+  if(debugIndex%2 == 0){
     Serial.print("Send ");
     Serial.print(throttle);
     Serial.print(" ");
     Serial.print(fwdBwd);
     Serial.print(" ");
     Serial.print(turn);
-    Serial.println("");
+    Serial.println(" ");
     debugIndex=0;
   }
   debugIndex += 1;
